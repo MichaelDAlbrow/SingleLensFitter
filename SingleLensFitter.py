@@ -143,7 +143,7 @@ class SingleLensFitter():
 
 		if self.eigen_lightcurves is not None:
 			for eig in self.eigen_lightcurves:
-				A = np.vstack(A,eig*err_inv)
+				A = np.vstack(A,eig)
 				n_params += 1
 
 		S = np.dot(A,np.dot(C_inv,A.T)).reshape(n_params,n_params)
