@@ -17,16 +17,25 @@ class SingleLensFitter():
 
 	"""Class definition for single microlens event fitter."""
 
-	def __init__(self,data,initial_parameters=None):
+	def __init__(self,data,initial_parameters=None,eigen_lightcurves=None):
 
 		"""Initialise the SingleLensFitter.
 
-		input data:	a dictionary with each key being a data set name string and each value being
+		input data:	A dictionary with each key being a data set name string and each value being
 				a tuple of (date, flux, flux_err) each being numpy arrays.
+
+		eigen_lightcurves:   	If defined, this should be a dictionary with the same keys as data, and
+					each value being an n x m numpy array of n lightcurves each with
+					m data values corresponding to the dates of the input data. These 
+					lightcurves (detrend vectors) are fitted linearly to the data at the
+					same time as the magnification and flux parameters. An eigen_lightucrves 
+					dictionary entry can be defined for any subset of data sources, and
+					different data sources can have different numbers of eigenlightcurves.
+
 		"""
 
 		self.data = data
-		self.eigen_lightcurves = None
+		self.eigen_lightcurves = eigen_lightcurves
 		self.marginalise_linear_parameters = True
 		self.use_gaussian_process_model = False
 		self.fit_blended = True
@@ -142,9 +151,11 @@ class SingleLensFitter():
 			n_params = 1
 
 		if self.eigen_lightcurves is not None:
-			for eig in self.eigen_lightcurves:
-				A = np.vstack(A,eig)
-				n_params += 1
+			if data_key in self.eigen_lightcurves:
+				eigs = self.eigen_lightcurves[data_key]
+				for i in range(eigs.shape[0]):
+					A = np.vstack((A,eigs[i,:]))
+					n_params += 1
 
 		S = np.dot(A,np.dot(C_inv,A.T)).reshape(n_params,n_params)
 		b = np.dot(A, np.dot(C_inv,y).T)
@@ -341,12 +352,14 @@ class SingleLensFitter():
 
 			y_cond = y
 			if self.eigen_lightcurves is not None:
-				coeffs, _ = self.linear_fit(data_set_name,self.magnification(t))
-				ci = 1
-				if self.fit_blended:
-					ci = 2
-				for j,eig in enumerate(self.eigen_lightcurves):
-					y_cond -= coeffs[ci+j]*eig
+				if data_set_name in self.eigen_lightucrves:
+					coeffs, _ = self.linear_fit(data_set_name,self.magnification(t))
+					ci = 1
+					if self.fit_blended:
+						ci = 2
+					eigs = self.eigen_lightcurves[data_set_name]
+					for j in range(eigs.shape[0]):
+						y_cond -= coeffs[ci+j]*eigs[j,:]
 
 			plt.errorbar(t, y_cond, yerr=yerr, fmt=".", color=c, capsize=0)
 			ax=plt.gca()
