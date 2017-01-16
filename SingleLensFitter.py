@@ -21,38 +21,58 @@ class SingleLensFitter():
 
 		"""Initialise the SingleLensFitter.
 
-		input data:	A dictionary with each key being a data set name string and each value being
-				a tuple of (date, flux, flux_err) each being numpy arrays.
+		inputs:
 
-		eigen_lightcurves:   	If defined, this should be a dictionary with the same keys as data, and
-					each value being an n x m numpy array of n lightcurves each with
-					m data values corresponding to the dates of the input data. These 
-					lightcurves (detrend vectors) are fitted linearly to the data at the
-					same time as the magnification and flux parameters. An eigen_lightucrves 
-					dictionary entry can be defined for any subset of data sources, and
-					different data sources can have different numbers of eigenlightcurves.
+			data:			A dictionary with each key being a data set name string and each 
+						value being a tuple of (date, flux, flux_err) each being numpy
+						arrays.
+
+			initial_parameters:	A numpy array of starting guess values for u_0, t_0, t_E.
+
+			eigen_lightcurves:   	If defined, this should be a dictionary with the same keys as data,
+						and each value being an n x m numpy array of n lightcurves each 
+						with m data values corresponding to the dates of the input data.
+						These lightcurves (detrend vectors) are fitted linearly to the data
+						at the same time as the magnification and flux parameters. An
+						eigen_lightucrves dictionary entry can be defined for any subset 
+						of data sources, and different data sources can have different
+						numbers of eigenlightcurves.
 
 		"""
 
 		self.data = data
 		self.eigen_lightcurves = eigen_lightcurves
+		self.initial_parameters = initial_parameters
+
 		self.marginalise_linear_parameters = True
-		self.use_gaussian_process_model = False
 		self.fit_blended = True
+
 		self.u0_limits = (0.0,1.3)
 		self.tE_limits = (0.5,200)
 		self.t0_limits = None
+
+		self.use_gaussian_process_model = False
+		self.GP_default_params = (1.0,-2.0)
 		self.ln_a_limits = (-5,15)
 		self.ln_tau_limits = (-5.5, -1)
 		self.ln_a = {}
 		self.ln_tau = {}
-		self.GP_default_params = (1.0,-2.0)
-		self.initial_parameters = initial_parameters
+
+		self.use_mixture_model = False
+		self.mixture_default_params = (0.0001,1.0e8,0.0)
+		self.P_b_limits = (0.0,0.05)
+		self.V_b_limits = (0.0,1.0e12)
+		self.Y_b_limits = (-1.e5,1.e5)
+		self.P_b = {}
+		self.V_b = {}
+		self.Y_b = {}
+
 		self.nwalkers = 50
 		self.nsteps = 200
 		self.thresh_std = 0.05
 		self.thresh_mean = 0.01
 		self.max_burnin_iterations = 20
+
 		self.plotprefix = 'single_lens_fit'
 		self.samples = None
 		self.n_plot_samples = 30
@@ -67,6 +87,17 @@ class SingleLensFitter():
 			prange = eval('self.'+p+'_limits')
 			if prange:
 				if GP_params[i] < prange[0] or GP_params[i] > prange[1]:
+					return -np.inf
+		return 0.0
+
+	
+
+	def lnprior_mixture(self,mixture_params):
+		params = ['P_b','V_b','Y_b']
+		for i, p in enumerate(params):
+			prange = eval('self.'+p+'_limits')
+			if prange:
+				if mixture_params[i] < prange[0] or mixture_params[i] > prange[1]:
 					return -np.inf
 		return 0.0
 
@@ -90,10 +121,20 @@ class SingleLensFitter():
 		self.tE = p[2]
 
 		lp = self.lnprior_ulens()
+		pi = 3
 
-		if self.use_gaussian_process_model:
-			pi = 3
-			for data_set_name in self.data.keys():
+		for data_set_name in self.data.keys():
+
+			if self.use_mixture_model:
+
+				self.P_b[data_set_name] = p[pi]
+				self.V_b[data_set_name] = p[pi+1]
+				self.Y_b[data_set_name] = p[pi+2]
+				lp += self.lnprior_mixture(p[pi:pi+3])
+				pi += 3
+
+			if self.use_gaussian_process_model:
+
 				self.ln_a[data_set_name] = p[pi]
 				self.ln_tau[data_set_name] = p[pi+1]
 				lp += self.lnprior_GP(p[pi:pi+2])
@@ -101,9 +142,10 @@ class SingleLensFitter():
 
 		if np.isfinite(lp):
 			lp += self.lnlikelihood()
-			return lp
+		else:
+			return -np.inf
 
-		return -np.inf
+		return lp
 
 
 	def lnlikelihood(self):
@@ -170,7 +212,20 @@ class SingleLensFitter():
 			g = np.dot(M,b)
 			D = y - np.dot(A.T,g)
 			chi2 = np.dot(D.T,np.dot(C_inv,D))
-			lnprob = np.log(2*np.pi) - 0.5*chi2 - 0.5*np.log(linalg.det(M))
+
+			if self.use_mixture_model:
+
+				detM = linalg.det(M)
+				lnprob = np.log( 2*np.pi*np.sum( (1.0 - self.P_b[data_key]) * \
+						np.exp(-D**2/(2.0*yerr**2)) / \
+						np.sqrt(detM) + \
+						self.P_b[data_key]*np.exp(-(y-self.Y_b[data_key])**2 / \
+						2*(self.V_b[data_key]+yerr**2)) / \
+						np.sqrt(2*np.pi*(self.V_b[data_key]+yerr**2)) ))
+			else:
+
+				lnprob = np.log(2*np.pi) - 0.5*chi2 - 0.5*np.log(linalg.det(M))
+
 			return g, lnprob
 
 		else:
@@ -181,7 +236,19 @@ class SingleLensFitter():
 				return (0,0), -np.inf
 			D = y - np.dot(A.T,a)
 			chi2 = np.dot(D.T,np.dot(C_inv,D))
-			lnprob = -0.5*chi2
+
+			if self.use_mixture_model:
+
+				lnprob = np.sum( np.log( (1.0 - self.P_b[data_key])*np.exp(-D**2/(2.0*yerr**2)) / \
+						np.sqrt(2*np.pi*yerr**2) + \
+						self.P_b[data_key]*np.exp(-(y-self.Y_b[data_key])**2 / \
+						2*(self.V_b[data_key]+yerr**2)) / \
+						np.sqrt(2*np.pi*(self.V_b[data_key]+yerr**2)) ))
+
+			else:
+
+				lnprob = -np.log(np.sum(np.sqrt(2*np.pi*yerr**2))) - 0.5*chi2
+
 			return a, lnprob
 
 
@@ -205,12 +272,27 @@ class SingleLensFitter():
 			raise Exception('Error in SingleLensFitter.fit(): No initial_parameters found.')
 			return None
 
-		ndim = 3
+		print 'Initial parameters:', self.initial_parameters
+
 		parameter_labels = [r"$u_0$",r"$t_0$",r"$t_E$"]
 		testdim = [0,2]
 
-		if self.use_gaussian_process_model:
-			for data_set_name in self.data.keys():
+		ndim = 3
+
+		for data_set_name in self.data.keys():
+
+			if self.use_mixture_model:
+
+				self.initial_parameters.append(self.mixture_default_params[0])
+				self.initial_parameters.append(self.mixture_default_params[1])
+				self.initial_parameters.append(self.mixture_default_params[2])
+				ndim += 3
+				parameter_labels.append(data_set_name+'_P_b')
+				parameter_labels.append(data_set_name+'_V_b')
+				parameter_labels.append(data_set_name+'_Y_b')
+
+
+			if self.use_gaussian_process_model:
 				self.initial_parameters.append(self.GP_default_params[0])
 				self.initial_parameters.append(self.GP_default_params[1])
 				ndim += 2
@@ -250,6 +332,22 @@ class SingleLensFitter():
 
 		if self.make_plots:
 			self.plot_chain(sampler,suffix='-burnin.png',labels=parameter_labels)
+			ind = 3
+
+			npar = 0
+			if self.use_mixture_model:
+				npar += 3
+			if self.use_gaussian_process_model:
+				npar += 2
+
+			if npar > 0:
+
+				for data_set_name in self.data.keys():
+				
+					self.plot_chain(sampler,index=range(ind,npar+ind),  \
+							suffix='-burnin-'+data_set_name+'.png', \
+							labels=parameter_labels[ind:ind+npar])
+					ind += npar
 
     		sampler.reset()
 
@@ -271,7 +369,19 @@ class SingleLensFitter():
 		self.tE = tE_mcmc[0]
 
 		if self.make_plots:
+
 			self.plot_chain(sampler,suffix='-final.png',labels=parameter_labels)
+			ind = 3
+
+			if npar > 0:
+
+				for data_set_name in self.data.keys():
+				
+					self.plot_chain(sampler,index=range(ind,npar+ind),  \
+							suffix='-final-'+data_set_name+'.png', \
+							labels=parameter_labels[ind:ind+npar])
+					ind += npar
+
 			self.plot_lightcurves()
 			self.plot_chain_corner()
 
@@ -283,9 +393,12 @@ class SingleLensFitter():
 		return
 
 
-	def plot_chain(self,s,suffix='',labels=[r"$u_0$",r"$t_0$",r"$t_E$"]):
+	def plot_chain(self,s,index=None,suffix='',labels=[r"$u_0$",r"$t_0$",r"$t_E$"]):
 
-		ndim = s.chain.shape[2]
+		if index is None:
+			index = [0,1,2]
+
+		ndim = len(index)
 
 		plt.figure()
 		
@@ -299,7 +412,7 @@ class SingleLensFitter():
 			else:
 				plt.subplot(ndim,1,i+1,sharex=ax1)
 
-			plt.plot(s.chain[:,:,i].T, '-', color='k', alpha=0.3)
+			plt.plot(s.chain[:,:,index[i]].T, '-', color='k', alpha=0.3)
 
 			if labels:
 				plt.ylabel(labels[i])
@@ -333,7 +446,7 @@ class SingleLensFitter():
 
 		plt.figure()
     
-		colour = iter(plt.cm.rainbow(np.linspace(0,1,len(self.data))))
+		colour = iter(plt.cm.jet(np.linspace(0,1,len(self.data))))
 
 		xmin = self.initial_parameters[1]-2*self.initial_parameters[2]
 		xmax = self.initial_parameters[1]+2*self.initial_parameters[2]
@@ -352,7 +465,7 @@ class SingleLensFitter():
 
 			y_cond = y
 			if self.eigen_lightcurves is not None:
-				if data_set_name in self.eigen_lightucrves:
+				if data_set_name in self.eigen_lightcurves:
 					coeffs, _ = self.linear_fit(data_set_name,self.magnification(t))
 					ci = 1
 					if self.fit_blended:
