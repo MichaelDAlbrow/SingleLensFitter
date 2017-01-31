@@ -330,24 +330,24 @@ class SingleLensFitter():
 			print 'pstd:', pstd
         		iteration += 1
 
-		if self.make_plots:
-			self.plot_chain(sampler,suffix='-burnin.png',labels=parameter_labels)
-			ind = 3
+			if self.make_plots:
+				self.plot_chain(sampler,suffix='-burnin.png',labels=parameter_labels)
+				ind = 3
 
-			npar = 0
-			if self.use_mixture_model:
-				npar += 3
-			if self.use_gaussian_process_model:
-				npar += 2
+				npar = 0
+				if self.use_mixture_model:
+					npar += 3
+				if self.use_gaussian_process_model:
+					npar += 2
 
-			if npar > 0:
+				if npar > 0:
 
-				for data_set_name in self.data.keys():
-				
-					self.plot_chain(sampler,index=range(ind,npar+ind),  \
-							suffix='-burnin-'+data_set_name+'.png', \
-							labels=parameter_labels[ind:ind+npar])
-					ind += npar
+					for data_set_name in self.data.keys():
+					
+						self.plot_chain(sampler,index=range(ind,npar+ind),  \
+								suffix='-burnin-'+data_set_name+'.png', \
+								labels=parameter_labels[ind:ind+npar])
+						ind += npar
 
     		sampler.reset()
 
@@ -389,6 +389,12 @@ class SingleLensFitter():
 		print 'u0', u0_mcmc
 		print 't0', t0_mcmc
 		print 'tE', tE_mcmc
+
+		with open(self.plotprefix+'.fit_results','w') as fid:
+			fid.write('u0 %f %f %f\n'%(u0_mcmc[0],u0_mcmc[1],u0_mcmc[2]))
+			fid.write('t0 %f %f %f\n'%(t0_mcmc[0],t0_mcmc[1],t0_mcmc[2]))
+			fid.write('tE %f %f %f\n'%(tE_mcmc[0],tE_mcmc[1],tE_mcmc[2]))
+
 
 		return
 
@@ -455,7 +461,8 @@ class SingleLensFitter():
 		for i, data_set_name in enumerate(self.data.keys()):
 
 			t, y, yerr = self.data[data_set_name]
-			c=next(colour)
+			#c=next(colour)
+			c = 'r'
 
 			if i == 0:
 				plt.subplot(n_data,1,i+1)
@@ -481,8 +488,10 @@ class SingleLensFitter():
 			plt.ylabel(data_set_name+r"  $\Delta F$")
     
 			x = np.linspace(xmin,xmax, 3000)
-			plt.plot(x, self.compute_lightcurve(data_set_name,x),color="k")
-        		ylim = ax.get_ylim()
+
+			if not(self.use_gaussian_process_model):
+				plt.plot(x, self.compute_lightcurve(data_set_name,x),color="k")
+	        		ylim = ax.get_ylim()
         
         		# Plot posterior samples.
 			for s in self.samples[np.random.randint(len(self.samples), size=self.n_plot_samples)]:
@@ -493,7 +502,7 @@ class SingleLensFitter():
 					a, tau = np.exp(s[3+2*i:3+2*i+2])
 					gp = george.GP(a * kernels.ExpKernel(tau))
 					gp.compute(t, yerr)
-					cov = gp.get_matrix(t)
+					self.cov = gp.get_matrix(t)
 					modelt = self.compute_lightcurve(data_set_name,t,params=s)
 					modelx = self.compute_lightcurve(data_set_name,x,params=s)
 
@@ -507,7 +516,8 @@ class SingleLensFitter():
 					plt.plot(x, self.compute_lightcurve(data_set_name,x,params=s), \
 							color="#4682b4",alpha=0.3)
 
-			ax.set_ylim(ylim)
+			if not(self.use_gaussian_process_model):
+				ax.set_ylim(ylim)
 
 		plt.savefig(self.plotprefix+'-lc.png')
 
